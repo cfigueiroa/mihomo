@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"strconv"
 	"syscall"
 	"unsafe"
 
@@ -76,24 +77,53 @@ func bindControl(ifaceIdx int, rAddrPort netip.AddrPort) controlFn {
 	}
 }
 
-func bindIfaceToDialer(ifaceName string, dialer *net.Dialer, _ string, destination netip.Addr) error {
+func bindIfaceToDialer(ifaceName string, dialer *net.Dialer, network string, destination netip.Addr) error {
 	ifaceObj, err := iface.ResolveInterface(ifaceName)
 	if err != nil {
 		return err
 	}
 
 	addControlToDialer(dialer, bindControl(ifaceObj.Index, netip.AddrPortFrom(destination, 0)))
+
+	// IP_UNICAST_IF only forces the egress interface; Windows still picks the
+	// source address from the route table. With several default routes of equal
+	// metric that address may belong to another interface, and the packet leaves
+	// with a source its gateway drops. Pin the source to the interface as well,
+	// best-effort: an interface without an address of the right family keeps the
+	// old behavior.
+	if dialer.LocalAddr == nil {
+		_ = fallbackBindIfaceToDialer(ifaceName, dialer, network, destination)
+	}
 	return nil
 }
 
-func bindIfaceToListenConfig(ifaceName string, lc *net.ListenConfig, _, address string, rAddrPort netip.AddrPort) (string, error) {
+func bindIfaceToListenConfig(ifaceName string, lc *net.ListenConfig, network, address string, rAddrPort netip.AddrPort) (string, error) {
 	ifaceObj, err := iface.ResolveInterface(ifaceName)
 	if err != nil {
 		return "", err
 	}
 
 	addControlToListenConfig(lc, bindControl(ifaceObj.Index, rAddrPort))
+
+	// Same source-address pinning as bindIfaceToDialer, for a wildcard listen
+	// towards a known global destination.
+	if host, _, splitErr := net.SplitHostPort(address); splitErr == nil && rAddrPort.Addr().Unmap().IsGlobalUnicast() {
+		if ip, parseErr := netip.ParseAddr(host); host == "" || (parseErr == nil && ip.IsUnspecified()) {
+			if pinned, pinErr := LookupLocalAddrFromIfaceName(ifaceName, network, rAddrPort.Addr(), portOf(address)); pinErr == nil {
+				return pinned.String(), nil
+			}
+		}
+	}
 	return address, nil
+}
+
+func portOf(address string) int {
+	_, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return 0
+	}
+	p, _ := strconv.ParseUint(port, 10, 16)
+	return int(p)
 }
 
 func ParseNetwork(network string, addr netip.Addr) string {
