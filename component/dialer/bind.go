@@ -75,6 +75,16 @@ func fallbackBindIfaceToDialer(ifaceName string, dialer *net.Dialer, network str
 	return nil
 }
 
+// shouldPinSourceAddr reports whether a dial bound to an interface should also
+// pin its source address. Only TCP over IPv4 needs it: UDP sockets pick a
+// source on the bound interface already, and IPv6 source selection (temporary
+// and deprecated addresses) is better left to the OS.
+func shouldPinSourceAddr(network string, destination netip.Addr) bool {
+	destination = destination.Unmap()
+	return strings.HasPrefix(network, "tcp") && network != "tcp6" &&
+		destination.Is4() && destination.IsGlobalUnicast()
+}
+
 func fallbackBindIfaceToListenConfig(ifaceName string, _ *net.ListenConfig, network, address string, rAddrPort netip.AddrPort) (string, error) {
 	_, port, err := net.SplitHostPort(address)
 	if err != nil {
