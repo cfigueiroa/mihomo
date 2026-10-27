@@ -76,13 +76,22 @@ func bindControl(ifaceIdx int, rAddrPort netip.AddrPort) controlFn {
 	}
 }
 
-func bindIfaceToDialer(ifaceName string, dialer *net.Dialer, _ string, destination netip.Addr) error {
+func bindIfaceToDialer(ifaceName string, dialer *net.Dialer, network string, destination netip.Addr) error {
 	ifaceObj, err := iface.ResolveInterface(ifaceName)
 	if err != nil {
 		return err
 	}
 
 	addControlToDialer(dialer, bindControl(ifaceObj.Index, netip.AddrPortFrom(destination, 0)))
+
+	// IP_UNICAST_IF forces the egress interface, but a TCP connect still takes
+	// its source address from the route table. With several default routes of
+	// equal metric that address may belong to another interface, and the SYN
+	// leaves with a source its gateway drops. Pin the source to the interface
+	// as well, best-effort: without a usable address the old behavior stays.
+	if dialer.LocalAddr == nil && shouldPinSourceAddr(network, destination) {
+		_ = fallbackBindIfaceToDialer(ifaceName, dialer, network, destination)
+	}
 	return nil
 }
 
